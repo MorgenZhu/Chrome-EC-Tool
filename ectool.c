@@ -80,7 +80,7 @@ const char help_str[] =
 	"      Enable/disable LCD backlight\n"
 	"  battery\n"
 	"      Prints battery info\n"
-	"  batterymonitor [i2c_port]\n"
+	"  batterymonitor\n"
 	"      Display and log battery info\n"
 	"  batterycutoff [at-shutdown]\n"
 	"      Cut off battery output power\n"
@@ -7316,6 +7316,65 @@ void close_keyboard(void)
     tcsetattr( 0, TCSANOW, &initial_settings );
 }
 
+int do_i2c_RW(unsigned int port, unsigned int addr,
+		uint8_t *write_buf, int write_len,
+		uint8_t **read_buf, int read_len) {
+	struct ec_params_i2c_passthru *p =
+		(struct ec_params_i2c_passthru *)ec_outbuf;
+	struct ec_response_i2c_passthru *r =
+		(struct ec_response_i2c_passthru *)ec_inbuf;
+	struct ec_params_i2c_passthru_msg *msg = p->msg;
+	uint8_t *pdata;
+	int size;
+	int rv;
+
+	p->port = port;
+	p->num_msgs = (read_len != 0) + (write_len != 0);
+
+	size = sizeof(*p) + p->num_msgs * sizeof(*msg);
+	if (size + write_len > ec_max_outsize) {
+		fprintf(stderr, "Params too large for buffer\n");
+		return -1;
+	}
+	if (sizeof(*r) + read_len > ec_max_insize) {
+		fprintf(stderr, "Read length too big for buffer\n");
+		return -1;
+	}
+
+	pdata = (uint8_t *)p + size;
+	if (write_len) {
+		msg->addr_flags = addr;
+		msg->len = write_len;
+
+		memcpy(pdata, write_buf, write_len);
+		msg++;
+	}
+
+	if (read_len) {
+		msg->addr_flags = addr | EC_I2C_FLAG_READ;
+		msg->len = read_len;
+	}
+
+	rv = ec_command(EC_CMD_I2C_PASSTHRU, 0, p, size + write_len,
+			r, sizeof(*r) + read_len);
+	if (rv < 0)
+		return rv;
+
+	/* Parse response */
+	if (r->i2c_status & (EC_I2C_STATUS_NAK | EC_I2C_STATUS_TIMEOUT)) {
+		return -1;
+	}
+
+	if (rv < sizeof(*r) + read_len) {
+		return -1;
+	}
+
+	if (read_len)
+		*read_buf = r->data;
+
+	return 0;
+}
+
 typedef enum SMB_Reg_Enum
 {
 	SMB_Reg_Mnfu=0,
@@ -7326,11 +7385,11 @@ typedef enum SMB_Reg_Enum
 	SMB_Reg_DV,
 	SMB_Reg_Voltage,
 	SMB_Reg_Current,
-	SMB_Reg_RSOC,
-	SMB_Reg_RealRSOC,
 	SMB_Reg_RMC,
 	SMB_Reg_FCC,
 	SMB_Reg_DC,
+	SMB_Reg_RSOC,
+	SMB_Reg_RealRSOC,
 	SMB_Reg_CC,
 	SMB_Reg_CV,
 	SMB_Reg_Status,
@@ -7340,6 +7399,8 @@ typedef enum SMB_Reg_Enum
 	SMC_Reg_InputCur,
 	SMC_Reg_CV,
 	SMC_Reg_CC,
+	SMC_Reg_Manuf,
+	SMC_Reg_DevID,
 	Reg_Count
 }SMB_REG_ENUM;
 
@@ -7349,7 +7410,7 @@ typedef struct bat_tool_info_struct
 	uint8_t device_addr;  // device addr
 	uint8_t SMB_Reg_addr; // smart battery register
 	uint8_t display_ctrl;
-	uint8_t log_ctrl;
+	uint8_t log_ctrl; // bit0:poling  bit1:display  bit2:log
 	int read_len;
 	int write_len;
 	char display_val[64];
@@ -7358,41 +7419,146 @@ typedef struct bat_tool_info_struct
 
 BAT_TOOL_INFO_STRUCT bat_info_list[]=
 {
-	[SMB_Reg_Mnfu]		={0x00, 0x00, 0, 0, 0, 0, "NA", "Battery_Vender    "},
-	[SMB_Reg_DevName]	={0x00, 0x00, 0, 0, 0, 0, "NA", "Battery_Name      "},
-	[SMB_Reg_Chem]		={0x00, 0x00, 0, 0, 0, 0, "NA", "Battery_Chemistry "},
+	[SMB_Reg_Mnfu]		={0x00, 0x00, 0, 2, 0, 0, "NA", "Battery_Vender    "},
+	[SMB_Reg_DevName]	={0x00, 0x00, 0, 2, 0, 0, "NA", "Battery_Name      "},
+	[SMB_Reg_Chem]		={0x00, 0x00, 0, 2, 0, 0, "NA", "Battery_Chemistry "},
 	
-	[SMB_Reg_Mode]		={0x0B, 0x03, 1, 0, 2, 1, "NA", "Battery_Mode      "},
-	[SMB_Reg_Temp]		={0x0B, 0x08, 0, 1, 2, 1, "NA", "Battery_Temp      "},
-	[SMB_Reg_DV]		={0x0B, 0x19, 0, 1, 2, 1, "NA", "Battery_DV        "},
-	[SMB_Reg_Voltage]	={0x0B, 0x09, 0, 1, 2, 1, "NA", "Battery_Voltage   "},
-	[SMB_Reg_Current]	={0x0B, 0x0A, 0, 1, 2, 1, "NA", "Battery_Current   "},
-	[SMB_Reg_RSOC]		={0x0B, 0x0D, 0, 1, 2, 1, "NA", "Battery_RSOC      "},
-	[SMB_Reg_RealRSOC]	={0x0B, 0x0D, 0, 1, 0, 0, "NA", "Battery_Real_RSOC "},
-	[SMB_Reg_RMC]		={0x0B, 0x0F, 0, 1, 2, 1, "NA", "Battery_RMC       "},
-	[SMB_Reg_FCC]		={0x0B, 0x10, 0, 1, 2, 1, "NA", "Battery_FCC       "},
-	[SMB_Reg_DC]		={0x0B, 0x18, 0, 1, 2, 1, "NA", "Battery_DC        "},
-	[SMB_Reg_CC]		={0x0B, 0x14, 0, 1, 2, 1, "NA", "Battery_CC        "},
-	[SMB_Reg_CV]		={0x0B, 0x15, 0, 1, 2, 1, "NA", "Battery_CV        "},
-	[SMB_Reg_Status]	={0x0B, 0x16, 1, 1, 2, 1, "NA", "Battery_Status    "},
-	[SMB_Reg_Cycle]		={0x0B, 0x17, 0, 0, 2, 1, "NA", "Battery_Cycle     "},
-	[SMB_Reg_date]		={0x0B, 0x1B, 0, 0, 2, 1, "NA", "Battery_Date      "},
-	[SMB_Reg_SerNum]	={0x0B, 0x1C, 1, 0, 2, 1, "NA", "Battery_SerialNum "},
+	[SMB_Reg_Mode]		={0x0B, 0x03, 1, 2, 2, 1, "NA", "Battery_Mode      "},
+	[SMB_Reg_Temp]		={0x0B, 0x08, 0, 7, 2, 1, "NA", "Battery_Temp      "},
+	[SMB_Reg_DV]		={0x0B, 0x19, 0, 7, 2, 1, "NA", "Battery_DV        "},
+	[SMB_Reg_Voltage]	={0x0B, 0x09, 0, 7, 2, 1, "NA", "Battery_Voltage   "},
+	[SMB_Reg_Current]	={0x0B, 0x0A, 0, 7, 2, 1, "NA", "Battery_Current   "},
+	[SMB_Reg_RMC]		={0x0B, 0x0F, 0, 7, 2, 1, "NA", "Battery_RMC       "},
+	[SMB_Reg_FCC]		={0x0B, 0x10, 0, 7, 2, 1, "NA", "Battery_FCC       "},
+	[SMB_Reg_DC]		={0x0B, 0x18, 0, 7, 2, 1, "NA", "Battery_DC        "},
+	[SMB_Reg_RSOC]		={0x0B, 0x0D, 0, 7, 2, 1, "NA", "Battery_RSOC      "},
+	[SMB_Reg_RealRSOC]	={0x0B, 0x0D, 0, 7, 0, 0, "NA", "Battery_Real_RSOC "},
+	[SMB_Reg_CC]		={0x0B, 0x14, 0, 7, 2, 1, "NA", "Battery_CC        "},
+	[SMB_Reg_CV]		={0x0B, 0x15, 0, 7, 2, 1, "NA", "Battery_CV        "},
+	[SMB_Reg_Status]	={0x0B, 0x16, 1, 7, 2, 1, "NA", "Battery_Status    "},
+	[SMB_Reg_Cycle]		={0x0B, 0x17, 0, 2, 2, 1, "NA", "Battery_Cycle     "},
+	[SMB_Reg_date]		={0x0B, 0x1B, 0, 2, 2, 1, "NA", "Battery_Date      "},
+	[SMB_Reg_SerNum]	={0x0B, 0x1C, 1, 2, 2, 1, "NA", "Battery_SerialNum "},
 
-	[SMC_Reg_InputCur]	={0x09, 0x3F, 1, 1, 2, 1, "NA", "Charger_InputCur  "},
-	[SMC_Reg_CV]		={0x09, 0x15, 0, 1, 2, 1, "NA", "Charger_Voltage   "},
-	[SMC_Reg_CC]		={0x09, 0x14, 0, 1, 2, 1, "NA", "Charger_Current   "},
+	[SMC_Reg_InputCur]	={0x09, 0x3F, 1, 7, 2, 1, "NA", "Charger_InputCur  "},
+	[SMC_Reg_CV]		={0x09, 0x15, 0, 7, 2, 1, "NA", "Charger_Voltage   "},
+	[SMC_Reg_CC]		={0x09, 0x14, 0, 7, 2, 1, "NA", "Charger_Current   "},
+	[SMC_Reg_Manuf]		={0x09, 0xFE, 1, 2, 2, 1, "NA", "Charger_Manuf     "},
+	[SMC_Reg_DevID]		={0x09, 0xFF, 1, 2, 2, 1, "NA", "Charger_DeviceID  "},
 };
+
+static int bat_rmc;
+static int bat_fcc;
+void polling_battery_data(unsigned int index, unsigned int bat_port, unsigned int chg_port)
+{
+	int rv;
+	int bat_val;
+	float f_bat_val;
+	uint8_t *read_buf=NULL;
+	
+	rv = -1;
+	if(0x0B==bat_info_list[index].device_addr)
+	{
+		rv = do_i2c_RW(bat_port,
+			bat_info_list[index].device_addr,
+			&(bat_info_list[index].SMB_Reg_addr),
+			bat_info_list[index].write_len,
+			&read_buf,
+			bat_info_list[index].read_len);
+	}
+	else if(0x09==bat_info_list[index].device_addr)
+	{
+		rv = do_i2c_RW(chg_port,
+			bat_info_list[index].device_addr,
+			&(bat_info_list[index].SMB_Reg_addr),
+			bat_info_list[index].write_len,
+			&read_buf,
+			bat_info_list[index].read_len);
+	}
+	
+	if(0==rv)
+	{
+		if(SMB_Reg_RealRSOC == index)
+		{
+			if(0 != bat_fcc)
+			{
+				sprintf(bat_info_list[index].display_val, "%s : %-8.2f", 
+					bat_info_list[index].item_name, ((bat_rmc*1.0)/bat_fcc)*100);
+			}
+			else
+			{
+				sprintf(bat_info_list[index].display_val, "%s : 0", 
+					bat_info_list[index].item_name);
+			}
+		}
+		else if(SMB_Reg_Temp == index)
+		{
+			f_bat_val = *(uint16_t *)read_buf;
+			f_bat_val = (f_bat_val*0.1)-273.15;
+			sprintf(bat_info_list[index].display_val, "%s : %-8.1f", 
+				bat_info_list[index].item_name, f_bat_val);
+		}
+		else if(SMB_Reg_Current == index)
+		{
+			bat_val = *(uint16_t *)read_buf;
+			if(bat_val>0x8000)
+			{
+				bat_val ^= 0xFFFF;
+				bat_val++;
+				bat_val = -bat_val;
+			}
+			sprintf(bat_info_list[index].display_val, "%s : %-10d", 
+				bat_info_list[index].item_name, bat_val);
+		}
+		else if(SMB_Reg_date == index)
+		{
+			bat_val = *(uint16_t *)read_buf;
+			sprintf(bat_info_list[index].display_val, "%s : %d-%d-%d", 
+				bat_info_list[index].item_name,
+				((bat_val>>9)&0x7F)+1980,
+				((bat_val>>5)&0x0F),
+				bat_val&0x1F);
+		}
+		else if(0==bat_info_list[index].display_ctrl)
+		{
+			sprintf(bat_info_list[index].display_val, "%s : %-10d", 
+				bat_info_list[index].item_name,
+				*(uint16_t *)read_buf);
+		}
+		else if(1==bat_info_list[index].display_ctrl)
+		{
+			sprintf(bat_info_list[index].display_val, "%s : 0x%04X", 
+				bat_info_list[index].item_name,
+				*(uint16_t *)read_buf);
+		}
+
+		if(SMB_Reg_RMC == index)
+		{
+			bat_rmc = *(uint16_t *)read_buf;
+		}
+
+		if(SMB_Reg_FCC == index)
+		{
+			bat_fcc = *(uint16_t *)read_buf;
+		}
+	}
+	else
+	{
+		sprintf(bat_info_list[index].display_val, "%s : N/A", 
+				bat_info_list[index].item_name);
+	}
+
+	// Delay 20ms
+	usleep(20000);
+}
 
 int cmd_battery_monitor(int argc, char *argv[])
 {
-	unsigned int bat_i2c_port;
+	unsigned int bat_i2c_port,chg_i2c_port;
+	unsigned int index;
 	uint8_t *read_buf=NULL;
-	int rv, index;
-	int bat_val;
-	int bat_rmc, bat_fcc;
+	int rv;
 	char *e;
-	float f_bat_val;
 	char batt_text[EC_MEMMAP_TEXT_MAX];
 	
 	FILE *pBat_logfile=NULL;
@@ -7406,20 +7572,75 @@ int cmd_battery_monitor(int argc, char *argv[])
 	struct ec_response_get_version r;
 	char *build_string = (char *)ec_inbuf;
 
-	if(2 != argc)
+	fprintf(stderr, "  Start\n");
+	#if 1
+	//==============================================================
+	// Find battery/charger i2c port
+	for(index=0; index<10; index++)
 	{
-		fprintf(stderr, "  --Need spec smart battery i2c port\n");
-		fprintf(stderr, "  --ectool batterylog port_num\n");
+		rv = do_i2c_RW(index,
+				bat_info_list[SMB_Reg_Cycle].device_addr,
+				&(bat_info_list[SMB_Reg_Cycle].SMB_Reg_addr),
+				bat_info_list[SMB_Reg_Cycle].write_len,
+				&read_buf,
+				bat_info_list[SMB_Reg_Cycle].read_len);
+		// Delay 20ms
+		usleep(20000);
+		if(0==rv)
+		{
+			bat_i2c_port = index;
+			break;
+		}
+	}
+	if(10==index)
+	{
+		return -1;
+	}
+	
+	for(index=0; index<10; index++)
+	{
+		rv = do_i2c_RW(index,
+				bat_info_list[SMC_Reg_DevID].device_addr,
+				&(bat_info_list[SMC_Reg_DevID].SMB_Reg_addr),
+				bat_info_list[SMC_Reg_DevID].write_len,
+				&read_buf,
+				bat_info_list[SMC_Reg_DevID].read_len);
+		if(0==rv)
+		{
+			chg_i2c_port = index;
+			break;
+		}
+	}
+	if(10==index)
+	{
+		return -1;
+	}
+	
+	#else
+	if(3 != argc)
+	{
+		fprintf(stderr, "  --Need spec smart battery i2c port and charger i2c port\n");
+		fprintf(stderr, "  --ectool batterymonitor bat_port chg_port\n");
 		return -1;
 	}
 
 	bat_i2c_port = strtol(argv[1], &e, 0);
 	if(e && *e)
 	{
-		fprintf(stderr, "  --Bad i2c port\n");
+		fprintf(stderr, "  --Bad battery i2c port\n");
 		return -1;
 	}
 
+	chg_i2c_port = strtol(argv[2], &e, 0);
+	if(e && *e)
+	{
+		fprintf(stderr, "  --Bad charger i2c port\n");
+		return -1;
+	}
+	#endif
+
+	//==============================================================
+	//Get battery string information
 	read_mapped_string(EC_MEMMAP_BATT_MFGR, batt_text, sizeof(batt_text));
 	sprintf(bat_info_list[SMB_Reg_Mnfu].display_val, "%s : %s", 
 						bat_info_list[SMB_Reg_Mnfu].item_name, batt_text);
@@ -7434,18 +7655,16 @@ int cmd_battery_monitor(int argc, char *argv[])
 
 	//==============================================================
 	//Get EC version
-	rv = ec_command(EC_CMD_GET_VERSION, 0, NULL, 0, &r, sizeof(r));
-	rv = ec_command(EC_CMD_GET_BUILD_INFO, 0, NULL, 0, ec_inbuf, ec_max_insize);
+	ec_command(EC_CMD_GET_VERSION, 0, NULL, 0, &r, sizeof(r));
+	ec_command(EC_CMD_GET_BUILD_INFO, 0, NULL, 0, ec_inbuf, ec_max_insize);
 
-	/* Ensure versions are null-terminated before we print them */
+	// Ensure versions are null-terminated before we print them
 	r.version_string_ro[sizeof(r.version_string_ro) - 1] = '\0';
 	r.version_string_rw[sizeof(r.version_string_rw) - 1] = '\0';
 	build_string[ec_max_insize - 1] = '\0';
-	//==============================================================
-	
 	
 	//==============================================================
-	// creat log file
+	// Creat log file
 	t = time(0);
 	strftime(logfile_name, sizeof(logfile_name), "%Y-%m-%d[%X]", localtime(&t));
 	logfile_name[13] = '-';
@@ -7459,7 +7678,7 @@ int cmd_battery_monitor(int argc, char *argv[])
 		return 0;
 	}
 
-	fprintf(pBat_logfile, "Battery info log\n");
+	fprintf(pBat_logfile, "Battery info log file\n\n");
 	
 	// Save EC versions
 	fprintf(pBat_logfile, "EC RO version:    %s\n", r.version_string_ro);
@@ -7479,11 +7698,11 @@ int cmd_battery_monitor(int argc, char *argv[])
 						"BAT_DV       "
 						"BAT_V        "
 						"BAT_C        "
-						"BAT_RSOC     "
-						"BAT_RealRSOC "
 						"BAT_RMC      "
 						"BAT_FCC      "
 						"BAT_DC       "
+						"BAT_RSOC     "
+						"BAT_RealRSOC "						
 						"BAT_CC       "
 						"BAT_CV       "
 						"BAT_STATUS   "
@@ -7494,116 +7713,47 @@ int cmd_battery_monitor(int argc, char *argv[])
 						"\n");
 
 	//==============================================================
-	
-	printf("\e[1;1H\e[2J\f\n\n"); // clear screen
+	// Display title
+	printf("\e[1;1H\e[2J\f\n"); // clear screen
 	printf("\t =======================================\n");
-	printf("\t Bitland Battery info view and log V0.3\n");
+	printf("\t Bitland Battery info view and log V0.4\n");
 	printf("\t \e[1;31mPress ESC to quit\e[0m\n");
 	printf("\t =======================================\n");
 	printf("\e[?25l"); // Hide cursor
-
+	printf("\e[7;1H");	// Move the to cursor x=1, y=8
+	printf("\t Battery_I2C_Port=%d\n", bat_i2c_port);
+	printf("\t Charger_I2C_Port=%d\n", chg_i2c_port);
 	init_keyboard();
 
-polling_battery:
-	blink_message?(blink_message=0):(blink_message=1);
-	printf("\e[8;1H");  // Move the to cursor x=1, y=8
-	printf("\t %s\n", blink_message?"Recording log...":"                ");
-	
+	//==============================================================
+	// Polling data
 	for(index=3; index<Reg_Count; index++)
 	{
-		rv = do_i2c_xfer(bat_i2c_port,
-			bat_info_list[index].device_addr,
-			&(bat_info_list[index].SMB_Reg_addr),
-			bat_info_list[index].write_len,
-			&read_buf,
-			bat_info_list[index].read_len);
-		
-		if(0==rv)
+		polling_battery_data(index, bat_i2c_port, chg_i2c_port);
+	}
+polling_battery:
+	for(index=3; index<Reg_Count; index++)
+	{
+		if(0x01 & bat_info_list[index].log_ctrl)
 		{
-			if(SMB_Reg_RealRSOC == index)
-			{
-				if(0 != bat_fcc)
-				{
-					sprintf(bat_info_list[index].display_val, "%s : %-8.2f", 
-						bat_info_list[index].item_name, ((bat_rmc*1.0)/bat_fcc)*100);
-				}
-				else
-				{
-					sprintf(bat_info_list[index].display_val, "%s : 0", 
-						bat_info_list[index].item_name);
-				}
-				continue;
-			}
-			else if(SMB_Reg_Temp == index)
-			{
-				f_bat_val = *(uint16_t *)read_buf;
-				f_bat_val = (f_bat_val*0.1)-273.15;
-				sprintf(bat_info_list[index].display_val, "%s : %-8.1f", 
-					bat_info_list[index].item_name, f_bat_val);
-				continue;
-			}
-			else if(SMB_Reg_Current == index)
-			{
-				bat_val = *(uint16_t *)read_buf;
-				if(bat_val>0x8000)
-				{
-					bat_val ^= 0xFFFF;
-					bat_val++;
-					bat_val = -bat_val;
-				}
-				sprintf(bat_info_list[index].display_val, "%s : %-10d", 
-					bat_info_list[index].item_name, bat_val);
-				continue;
-			}
-			else if(SMB_Reg_date == index)
-			{
-				bat_val = *(uint16_t *)read_buf;
-				sprintf(bat_info_list[index].display_val, "%s : %d-%d-%d", 
-					bat_info_list[index].item_name,
-					((bat_val>>9)&0x7F)+1980,
-					((bat_val>>5)&0x0F),
-					bat_val&0x1F);
-				continue;
-			}
-
-			if(SMB_Reg_RMC == index)
-			{
-				bat_rmc = *(uint16_t *)read_buf;
-			}
-
-			if(SMB_Reg_FCC == index)
-			{
-				bat_fcc = *(uint16_t *)read_buf;
-			}
-			
-			if(0==bat_info_list[index].display_ctrl)
-			{
-				sprintf(bat_info_list[index].display_val, "%s : %-10d", 
-					bat_info_list[index].item_name,
-					*(uint16_t *)read_buf);
-			}
-			else if(1==bat_info_list[index].display_ctrl)
-			{
-				sprintf(bat_info_list[index].display_val, "%s : 0x%04X", 
-					bat_info_list[index].item_name,
-					*(uint16_t *)read_buf);
-			}
+			polling_battery_data(index, bat_i2c_port, chg_i2c_port);
 		}
-
-		// Delay 20ms
-		usleep(20000);
 	}
 
-	// Log data
+	//==============================================================
+	// Display and Log data
 	t = time(0);
 	strftime(time_string, sizeof(time_string), "%Y/%m/%d/%X", localtime(&t));
 	fprintf(pBat_logfile, "%-24s", time_string);
-	
+
+	blink_message?(blink_message=0):(blink_message=1);
+	printf("\e[10;10H");	// Move the to cursor x=1, y=10
+	printf("\t %s\n", (blink_message)?"Recording log...":"                ");
 	for(index=0; index<Reg_Count; index++)
 	{
 		printf("\t %s\n", bat_info_list[index].display_val);
 		
-		if(1==bat_info_list[index].log_ctrl)
+		if(0x04 & bat_info_list[index].log_ctrl)
 		{
 			e = bat_info_list[index].display_val;
 			e = e+21;
@@ -7612,7 +7762,9 @@ polling_battery:
 	}
 	fprintf(pBat_logfile, "\n");
 	fflush(pBat_logfile);
+	fflush(stdout);
 
+	//==============================================================
 	// Delay 1000ms
 	sleep(1);
 	if (kbhit())
