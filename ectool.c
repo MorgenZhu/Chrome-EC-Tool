@@ -82,6 +82,8 @@ const char help_str[] =
 	"      Prints battery info\n"
 	"  batterymonitor\n"
 	"      Display and log battery info\n"
+	"  get_uptime_info\n"
+	"      Display EC reset info\n"
 	"  batterycutoff [at-shutdown]\n"
 	"      Cut off battery output power\n"
 	"  batteryparam\n"
@@ -7781,6 +7783,68 @@ polling_battery:
 	fclose(pBat_logfile);
 	return 0;
 }
+
+
+struct uptime_info_struct
+{
+	char index;
+	char *str;
+};
+struct uptime_info_struct uptime_info_table[]=
+{	{0,  "Other known reason"},
+	{1,  "Reset pin asserted"},
+	{2,  "Brownout"},
+	{3,  "Power-on reset"},
+	{4,  "Watchdog timer reset"},
+	{5,  "Soft reset trigger by core"},
+	{6,  "Wake from hibernate "},
+	{7,  "RTC alarm wake"},
+	{8,  "Wake pin triggered wake"},
+	{9,  "Low battery triggered wake"},
+	{10, "Jumped directly to this image"},
+	{11, "Hard reset from software"},
+	{12, "Do not power on AP "},
+	{13, "Some reset flags preserved from previous boot"},
+	{14, "USB resume triggered wake"},
+	{15, "USB Type-C debug cable"},
+	{16, "Fixed Reset Functionality"},
+	{17, "Security threat "},
+	{18, "AP experienced a watchdog reset"},
+};
+
+int cmd_GET_UPTIME_INFO(int argc, char *argv[])
+{
+	struct ec_response_uptime_info p;
+	int rv;
+	int index;
+	
+	memset(&p, 0, sizeof(p));
+
+	rv = ec_command(EC_CMD_GET_UPTIME_INFO, 0, NULL, 0, &p, sizeof(p));
+	rv = (rv < 0 ? rv : 0);
+
+	if (rv < 0) {
+		fprintf(stderr, "Failed to get uptime info, rv=%d\n", rv);
+		fprintf(stderr, "It is expected if the rv is -%d "
+				"(EC_RES_INVALID_COMMAND)\n",
+				EC_RES_INVALID_COMMAND);
+	} else {
+		printf("\n");
+		printf("SUCCESS to get uptime info.\n");
+		printf("Time since EC boot : %d sec\n", p.time_since_ec_boot_ms/1000);
+		printf("Reset cause :\n");
+		for(index=0; index<19; index++)
+		{
+			if((p.ec_reset_flags)&(1<<index))
+			{
+				printf("\tindex=%02d - %s\n", index, uptime_info_table[index].str);
+			}
+		}
+		printf("\n");
+	}
+	return rv;
+	
+}
 #endif
 
 int cmd_battery_cut_off(int argc, char *argv[])
@@ -9673,6 +9737,7 @@ const struct command commands[] = {
 	{"backlight", cmd_lcd_backlight},
 	{"battery", cmd_battery},
 	{"batterymonitor", cmd_battery_monitor},
+	{"get_uptime_info", cmd_GET_UPTIME_INFO},
 	{"batterycutoff", cmd_battery_cut_off},
 	{"batteryparam", cmd_battery_vendor_param},
 	{"boardversion", cmd_board_version},
