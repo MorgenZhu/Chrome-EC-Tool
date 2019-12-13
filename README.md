@@ -1,5 +1,13 @@
 # Chrome-EC-Tool
 
+Date : 2019/12/13
+1. Add get_uptime_info command
+   a. display EC reset cause
+   b. display the time since EC boot 
+2. Modify batterymonitor command
+   a. auto find bat/chg i2c port, and it can also be specifed
+   b. automatically print recorrd item in the log file
+
 Date : 2019/11/27
 1. Automatic searching battery/charger i2c port
 
