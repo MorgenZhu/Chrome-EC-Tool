@@ -82,6 +82,8 @@ const char help_str[] =
 	"      Prints battery info\n"
 	"  batterymonitor\n"
 	"      Display and log battery info\n"
+	"  get_uptime_info\n"
+	"      Display EC reset info\n"
 	"  batterycutoff [at-shutdown]\n"
 	"      Cut off battery output power\n"
 	"  batteryparam\n"
@@ -261,6 +263,9 @@ const char help_str[] =
 	"  reboot_ec <RO|RW|cold|hibernate|hibernate-clear-ap-off|disable-jump>"
 			" [at-shutdown|switch-slot]\n"
 	"      Reboot EC to RO or RW\n"
+	"  reboot_ap_on_g3\n"
+	"      Requests that the EC will automatically reboot the AP the next time\n"
+	"      we enter the G3 power state.\n"
 	"  rollbackinfo\n"
 	"      Print rollback block information\n"
 	"  rtcget\n"
@@ -1096,6 +1101,13 @@ int cmd_reboot_ec(int argc, char *argv[])
 	return (rv < 0 ? rv : 0);
 }
 
+int cmd_reboot_ap_on_g3(int argc, char *argv[])
+{
+	int rv;
+
+	rv = ec_command(EC_CMD_REBOOT_AP_ON_G3, 0, NULL, 0, NULL, 0);
+	return (rv < 0 ? rv : 0);
+}
 
 int cmd_flash_info(int argc, char *argv[])
 {
@@ -5588,8 +5600,8 @@ int cmd_usb_pd(int argc, char *argv[])
 					" DR data\n" : "",
 				(r_v1->role & PD_CTRL_RESP_ROLE_USB_COMM) ?
 					" USB capable\n" : "",
-				(r_v1->role & PD_CTRL_RESP_ROLE_EXT_POWERED) ?
-					" Externally powered\n" : "");
+				(r_v1->role & PD_CTRL_RESP_ROLE_UNCONSTRAINED) ?
+					" Unconstrained power\n" : "");
 	}
 	return 0;
 }
@@ -7609,7 +7621,7 @@ void polling_battery_data(unsigned int index, unsigned int bat_port, unsigned in
 	usleep(20000);
 }
 
-#define Bat_Log_Tool_Ver   "V0.5"
+#define Bat_Log_Tool_Ver   "V0.6"
 int cmd_battery_monitor(int argc, char *argv[])
 {
 	unsigned int bat_i2c_port,chg_i2c_port;
@@ -7775,6 +7787,9 @@ int cmd_battery_monitor(int argc, char *argv[])
 	printf("\e[7;1H");	// Move the to cursor x=1, y=8
 	printf("\t Battery_I2C_Port=%d\n", bat_i2c_port);
 	printf("\t Charger_I2C_Port=%d\n", chg_i2c_port);
+	printf("\e[8;37H %s", __DATE__);
+
+
 	init_keyboard();
 
 	//==============================================================
@@ -9914,6 +9929,7 @@ const struct command commands[] = {
 	{"version", cmd_version},
 	{"waitevent", cmd_wait_event},
 	{"wireless", cmd_wireless},
+	{"reboot_ap_on_g3", cmd_reboot_ap_on_g3},
 	{NULL, NULL}
 };
 

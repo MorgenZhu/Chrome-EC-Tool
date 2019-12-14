@@ -1,5 +1,8 @@
 # Chrome-EC-Tool
 
+Date : 2019/12/14
+1. Sync with master branch
+
 Date : 2019/12/13
 1. Add get_uptime_info command
    a. display EC reset cause
