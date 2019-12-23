@@ -1,5 +1,9 @@
 # Chrome-EC-Tool
 
+Date : 2019/12/23
+1. Sync with master branch
+2. Delete get_uptime_info command
+
 Date : 2019/12/14
 1. Sync with master branch
 

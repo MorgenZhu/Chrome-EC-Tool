@@ -82,8 +82,6 @@ const char help_str[] =
 	"      Prints battery info\n"
 	"  batterymonitor\n"
 	"      Display and log battery info\n"
-	"  get_uptime_info\n"
-	"      Display EC reset info\n"
 	"  batterycutoff [at-shutdown]\n"
 	"      Cut off battery output power\n"
 	"  batteryparam\n"
@@ -4764,11 +4762,15 @@ static int cmd_motionsense(int argc, char **argv)
 
 		if (version >= 3) {
 			printf("Min Frequency:              %d mHz\n",
-					resp->info_3.min_frequency);
+				resp->info_3.min_frequency);
 			printf("Max Frequency:              %d mHz\n",
-					resp->info_3.max_frequency);
+				resp->info_3.max_frequency);
 			printf("FIFO Max Event Count:       %d\n",
-					resp->info_3.fifo_max_event_count);
+				resp->info_3.fifo_max_event_count);
+		}
+		if (version >= 4) {
+			printf("Flags:                      %d\n",
+			       resp->info_4.flags);
 		}
 		return 0;
 	}
@@ -5588,8 +5590,38 @@ int cmd_usb_pd(int argc, char *argv[])
 					printf("UNKNOWN");
 				printf("\n");
 			}
-		}
 
+			printf("Adapter type:%s\n",
+				r_v2->control_flags & USB_PD_MUX_TBT_ADAPTER ?
+					"Legacy Thunderbolt" : "Type-C");
+
+			printf("Cable type:%sOptical\n",
+				r_v2->control_flags &
+				USB_PD_MUX_TBT_CABLE_TYPE ? "" : "Non-");
+
+			printf("Link LSRX Communication:%s-directional\n",
+				r_v2->control_flags & USB_PD_MUX_TBT_LINK ?
+					"Uni" : "Bi");
+
+			printf("Cable Speed:");
+			switch (r_v2->cable_speed) {
+			case USB3_GEN1:
+				printf("TBT Gen1");
+				break;
+			case USB3_GEN1_USB4_GEN2:
+				printf("TBT Gen1 and TBT Gen2");
+				break;
+			case USB4_GEN3:
+				printf("TBT Gen3");
+				break;
+			default:
+				printf("UNKNOWN");
+			}
+			printf("\n");
+
+			printf("Rounded support: 3rd Gen %srounded support\n",
+				r_v2->cable_gen ? "and 4th Gen " : "");
+		}
 		/* If connected to a PD device, then print port partner info */
 		if ((r_v1->enabled & PD_CTRL_RESP_ENABLED_CONNECTED) &&
 		    (r_v1->enabled & PD_CTRL_RESP_ENABLED_PD_CAPABLE))
@@ -5701,6 +5733,7 @@ int cmd_usb_pd_mux_info(int argc, char *argv[])
 		printf("HPD_IRQ=%d ", !!(r.flags & USB_PD_MUX_HPD_IRQ));
 		printf("HPD_LVL=%d ", !!(r.flags & USB_PD_MUX_HPD_LVL));
 		printf("SAFE=%d ", !!(r.flags & USB_PD_MUX_SAFE_MODE));
+		printf("TBT=%d ", !!(r.flags & USB_PD_MUX_TBT_COMPAT_ENABLED));
 		printf("\n");
 	}
 
@@ -7853,68 +7886,6 @@ polling_battery:
 	fclose(pBat_logfile);
 	return 0;
 }
-
-
-struct uptime_info_struct
-{
-	char index;
-	char *str;
-};
-struct uptime_info_struct uptime_info_table[]=
-{	{0,  "Other known reason"},
-	{1,  "Reset pin asserted"},
-	{2,  "Brownout"},
-	{3,  "Power-on reset"},
-	{4,  "Watchdog timer reset"},
-	{5,  "Soft reset trigger by core"},
-	{6,  "Wake from hibernate "},
-	{7,  "RTC alarm wake"},
-	{8,  "Wake pin triggered wake"},
-	{9,  "Low battery triggered wake"},
-	{10, "Jumped directly to this image"},
-	{11, "Hard reset from software"},
-	{12, "Do not power on AP "},
-	{13, "Some reset flags preserved from previous boot"},
-	{14, "USB resume triggered wake"},
-	{15, "USB Type-C debug cable"},
-	{16, "Fixed Reset Functionality"},
-	{17, "Security threat "},
-	{18, "AP experienced a watchdog reset"},
-};
-
-int cmd_GET_UPTIME_INFO(int argc, char *argv[])
-{
-	struct ec_response_uptime_info p;
-	int rv;
-	int index;
-	
-	memset(&p, 0, sizeof(p));
-
-	rv = ec_command(EC_CMD_GET_UPTIME_INFO, 0, NULL, 0, &p, sizeof(p));
-	rv = (rv < 0 ? rv : 0);
-
-	if (rv < 0) {
-		fprintf(stderr, "Failed to get uptime info, rv=%d\n", rv);
-		fprintf(stderr, "It is expected if the rv is -%d "
-				"(EC_RES_INVALID_COMMAND)\n",
-				EC_RES_INVALID_COMMAND);
-	} else {
-		printf("\n");
-		printf("SUCCESS to get uptime info.\n");
-		printf("Time since EC boot : %d sec\n", p.time_since_ec_boot_ms/1000);
-		printf("Reset cause :\n");
-		for(index=0; index<19; index++)
-		{
-			if((p.ec_reset_flags)&(1<<index))
-			{
-				printf("\tindex=%02d - %s\n", index, uptime_info_table[index].str);
-			}
-		}
-		printf("\n");
-	}
-	return rv;
-	
-}
 #endif
 
 int cmd_battery_cut_off(int argc, char *argv[])
@@ -8053,6 +8024,7 @@ static void cmd_cbi_help(char *cmd)
 	"      3: DRAM_PART_NUM (string)\n"
 	"      4: OEM_NAME (string)\n"
 	"      5: MODEL_ID\n"
+	"      6: FW_CONFIG\n"
 	"    <size> is the size of the data in byte. It should be zero for\n"
 	"      string types.\n"
 	"    <value/string> is an integer or a string to be set\n"
@@ -9807,7 +9779,6 @@ const struct command commands[] = {
 	{"backlight", cmd_lcd_backlight},
 	{"battery", cmd_battery},
 	{"batterymonitor", cmd_battery_monitor},
-	{"get_uptime_info", cmd_GET_UPTIME_INFO},
 	{"batterycutoff", cmd_battery_cut_off},
 	{"batteryparam", cmd_battery_vendor_param},
 	{"boardversion", cmd_board_version},
