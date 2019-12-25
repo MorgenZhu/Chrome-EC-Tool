@@ -90,6 +90,8 @@ const char help_str[] =
 	"      Prints the board version\n"
 	"  cbi\n"
 	"      Get/Set Cros Board Info\n"
+	"  cbi_eeprom\n"
+	"      Dump/Update CBI EEPROM\n"
 	"  chargecurrentlimit\n"
 	"      Set the maximum battery charging current\n"
 	"  chargecontrol\n"
@@ -7886,6 +7888,224 @@ polling_battery:
 	fclose(pBat_logfile);
 	return 0;
 }
+
+static void cmd_cbi_eeprom_help(char *cmd)
+{
+	fprintf(stderr,
+	"  Usage: %s dump\n"
+	"  Usage: %s update <cbi_file_name>\n", cmd, cmd);
+}
+
+#define EEPROM_I2C_ADDR 0x50
+int cmd_cbi_eeprom(int argc, char *argv[])
+{
+	unsigned int eeprom_i2c_port;
+	uint8_t eeprom_data_index;
+	uint8_t eeprom_write_buf[17];
+	uint8_t eeprom_cbi_data[256];
+	unsigned int index, i;
+	uint8_t *read_buf=NULL;
+	int rv;
+	FILE *pCBI_file=NULL;
+
+	//==============================================================
+	// Auto find battery/charger i2c port
+	for(index=0; index<10; index++)
+	{
+		rv = do_i2c_RW(index, EEPROM_I2C_ADDR,
+				&eeprom_data_index, 1, &read_buf, 16);
+
+		if(0==rv)
+		{
+			eeprom_i2c_port = index;
+			break;
+		}
+		// Delay 50ms
+		usleep(50000);
+	}
+	if(10==index)
+	{
+		printf("\nCan't find CBI EEPROM I2C Port\n\n");
+		return -1;
+	}
+	
+	if((NULL!=argv[1]) && (!strcasecmp(argv[1], "dump")))
+	{
+		printf("\tCBI dump\n\n");
+
+		for(index=0; index<16; index++)
+		{
+			eeprom_data_index = index*16;
+			rv = do_i2c_RW(eeprom_i2c_port, EEPROM_I2C_ADDR,
+				&eeprom_data_index, 1, &read_buf, 16);
+
+			if(0==rv)
+			{
+				for(i=0; i<16; i++)
+				{
+					eeprom_cbi_data[i+(index*16)] = read_buf[i];
+					printf("%02X ", read_buf[i]);
+				}
+				printf("\n");
+			}
+			else
+			{
+				printf("EEPROM read Error!\n");
+				break;
+			}
+		}
+
+		if(16!=index)
+		{
+			printf("\nCBI dump Error!\n");
+		}
+		else
+		{
+			printf("\nCBI dump OK!\n");
+
+			pCBI_file = fopen("CBI_image.bin", "wb");
+			if(!pCBI_file)
+			{
+				printf("Can't open CBI image backup file : %s\n\n", "CBI_image.bin");
+				return 0;
+			}
+
+			fseek(pCBI_file, 0, SEEK_SET);
+			index = fwrite(eeprom_cbi_data, 1, 256, pCBI_file);
+			if(256 != index)
+			{
+				printf(" Backup CBI data error!\n\n");
+			}
+			else
+			{
+				printf("CBI data backup OK! <CBI_image.bin>\n");
+			}
+
+			fclose(pCBI_file);
+		}
+		return 0;
+	}
+	else if((NULL!=argv[1]) && (!strcasecmp(argv[1], "update")))
+	{
+		printf("\tCBI Update\n");
+
+		//=============================================================
+		// Read CBI data from file
+		if(NULL!=argv[2])
+		{
+			pCBI_file = fopen(argv[2], "rb");
+			if(!pCBI_file)
+			{
+				fprintf(stderr, "Can't open CBI image file : %s\n\n", argv[2]);
+				return 0;
+			}
+
+			index = fread(eeprom_cbi_data, 1, 256, pCBI_file);
+			if(256 != index)
+			{
+				fprintf(stderr, " Read CBI data from file error!\n\n");
+				fclose(pCBI_file);
+				return 0;
+			}
+
+			fclose(pCBI_file);
+		}
+		else
+		{
+			printf("Please input CBI file name\n\n");
+			return 0;
+		}
+
+		#if 0
+		for(index=0; index<256; index++)
+		{
+			if(0==(index%16))
+			{
+				printf("\n");
+			}
+			printf("%02X ", eeprom_cbi_data[index]);
+		}
+		printf("\n\n");
+		return 0;
+		#endif
+
+		//=============================================================
+		// write CBI data to EEPROM
+		printf(" CBI EEPROM write  : ");
+		for(index=0; index<16; index++)
+		{
+			for(i=1; i<17; i++)
+			{
+				// 1byte eeprom data offset
+				eeprom_write_buf[0] = index*16;
+				//  16byte data
+				eeprom_write_buf[i] = eeprom_cbi_data[(i-1)+(index*16)];
+			}
+			printf("#");
+			rv = do_i2c_RW(eeprom_i2c_port, EEPROM_I2C_ADDR,
+				eeprom_write_buf, 17, NULL, 0);
+
+			if(0==rv)
+			{
+				// Delay 10ms, wait EEPROM internal write
+				usleep(10000);
+			}
+			else
+			{
+				printf(" --EEPROM write Error!\n");
+				printf("1. Maybe EEPROM does not exist\n");
+				printf("2. Maybe EEPROM write protect,please power on without battery\n");
+				break;
+			}
+		}
+
+		if(16!=index)
+		{
+			printf("\nCBI update Error!\n");
+			return 0;
+		}
+
+		//=============================================================
+		// read CBI data from EEPROM for check
+		printf("\n CBI EEPROM verify : ");
+		for(index=0; index<16; index++)
+		{
+			eeprom_data_index = index*16;
+			rv = do_i2c_RW(eeprom_i2c_port, EEPROM_I2C_ADDR,
+				&eeprom_data_index, 1, &read_buf, 16);
+			printf("#");
+			if(0==rv)
+			{
+				for(i=0; i<16; i++)
+				{
+					if(eeprom_cbi_data[i+(index*16)] != read_buf[i])
+					{
+						break;
+					}
+				}
+			}
+			else
+			{
+				printf(" --EEPROM read Error!\n");
+				break;
+			}
+		}
+
+		if((16!=index))
+		{
+			printf("\nCBI Verify Error!");
+			return 0;
+		}
+		
+		printf("\n\nCBI update OK!\n\n");
+		return 0;
+	}
+
+	fprintf(stderr, "Invalid sub command: %s\n\n", argv[1]);
+	cmd_cbi_eeprom_help(argv[0]);
+	return -1;
+}
+
 #endif
 
 int cmd_battery_cut_off(int argc, char *argv[])
@@ -9783,6 +10003,7 @@ const struct command commands[] = {
 	{"batteryparam", cmd_battery_vendor_param},
 	{"boardversion", cmd_board_version},
 	{"cbi", cmd_cbi},
+	{"cbi_eeprom", cmd_cbi_eeprom},
 	{"chargecurrentlimit", cmd_charge_current_limit},
 	{"chargecontrol", cmd_charge_control},
 	{"chargeoverride", cmd_charge_port_override},

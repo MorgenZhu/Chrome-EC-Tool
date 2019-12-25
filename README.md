@@ -1,5 +1,8 @@
 # Chrome-EC-Tool
 
+Date : 2019/12/25
+1. Add cbi_eeprom command for dump/update CBI EEPROM
+
 Date : 2019/12/23
 1. Sync with master branch
 2. Delete get_uptime_info command
