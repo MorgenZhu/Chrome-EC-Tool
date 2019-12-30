@@ -1,5 +1,8 @@
 # Chrome-EC-Tool
 
+Date 2019/12/30
+1. Add linux IO R/W sample code
+
 Date : 2019/12/25
 1. Add cbi_eeprom command for dump/update CBI EEPROM
 
